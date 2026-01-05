@@ -2,8 +2,9 @@
 # This version plots all the QSOs for all bands cumulative for all time week.
 # Happier with the coours.
 # Toggling data now works.
+# Tooltips still not working.
 # Added checkboxes for showing / hiding FT8 and FT4.
-# Some duplicate code remoevd.
+# Toggling data now works.
 
 # pip install tqdm
 # pip install mplcursors
@@ -190,22 +191,33 @@ def plot_cumulative_stacked_interactive(df, weeks):
 
     @cursor.connect("add")
     def on_add(sel):
-        idx = int(round(sel.target[0]))
-        if idx < 0 or idx >= len(x):
+        x_idx = int(round(sel.target[0]))
+        y_val = sel.target[1]
+
+        if x_idx < 0 or x_idx >= len(x):
+            sel.annotation.set_visible(False)
             return
 
         cumulative = 0
-        # Only enabled types
         for t in all_types:
             if t not in enabled_types:
                 continue
-            val = pivot[t].iloc[idx]
-            if sel.target[1] <= val:
+
+            series = pivot[t].values
+            top = cumulative + series[x_idx]
+
+            if y_val <= top:
                 sel.annotation.set_text(
-                    f"{t}\n{week_labels[idx]}\nQSOs: {int(val)}"
+                    f"{t}\n"
+                    f"{week_labels[x_idx]}\n"
+                    f"QSOs: {int(series[x_idx])}"
                 )
+                sel.annotation.set_visible(True)
                 return
-            cumulative = val
+
+            cumulative = top
+
+        sel.annotation.set_visible(False)
 
     plt.tight_layout()
     plt.show()
