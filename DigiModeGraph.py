@@ -2,6 +2,8 @@
 # This version plots all the QSOs for all bands cumulative for all time week.
 # Happier with the coours.
 # Toggling data now works.
+# Added checkboxes for showing / hiding FT8 and FT4.
+# Some duplicate code remoevd.
 
 # pip install tqdm
 # pip install mplcursors
@@ -17,12 +19,17 @@ from tqdm import tqdm
 import mplcursors
 import numpy as np
 
+from matplotlib.widgets import CheckButtons
+
 
 BAND_ORDER = [
     "2200m", "630m", "160m", "80m", "60m", "40m", "30m",
     "20m", "17m", "15m", "12m", "10m", "6m", "4m",
     "2m", "70cm"
 ]
+
+import warnings
+warnings.filterwarnings("ignore", message="Pick support for PolyCollection")
 
 
 def colour_for_type(qso_type):
@@ -112,7 +119,16 @@ def plot_cumulative_stacked_interactive(df, weeks):
             new_stacks = ax.stackplot(x, y, colors=colours, alpha=0.85)
             stack_artists.extend(new_stacks)
 
+        # Rescale Y-axis to max of visible stacks
+        if types_to_draw:
+            visible_sum = pivot[types_to_draw].sum(axis=1)
+            max_y = visible_sum.max()
+            ax.set_ylim(0, max_y * 1.1)
+        else:
+            ax.set_ylim(0, 1)
+
         fig.canvas.draw_idle()
+
 
     # --- Legend toggle handler ---
     def on_pick(event):
@@ -131,6 +147,43 @@ def plot_cumulative_stacked_interactive(df, weeks):
         draw_stack()  # redraw only visible stacks
 
     fig.canvas.mpl_connect("pick_event", on_pick)
+
+
+    # --- Create checkbox axes ---
+    rax = fig.add_axes([0.5, 0.7, 0.1, 0.15])  # x, y, width, height
+    modes = ["FT4", "FT8"]
+    visibility = [True, True]  # initially visible
+    check = CheckButtons(rax, modes, visibility)
+
+
+
+    # --- Checkbox callback ---
+    def checkbox_func(label):
+        mode = label
+        # Toggle all types of this mode
+        for t in all_types:
+            if t.endswith(mode):
+                if mode == "FT4":
+                    if visibility[0]:
+                        enabled_types.discard(t)
+                    else:
+                        enabled_types.add(t)
+                else:
+                    if visibility[1]:
+                        enabled_types.discard(t)
+                    else:
+                        enabled_types.add(t)
+        # Update the visibility list
+        if mode == "FT4":
+            visibility[0] = not visibility[0]
+        else:
+            visibility[1] = not visibility[1]
+
+        draw_stack()
+
+    check.on_clicked(checkbox_func)
+
+
 
     # --- Hover cursor ---
     cursor = mplcursors.cursor(ax, hover=True)
@@ -160,6 +213,8 @@ def plot_cumulative_stacked_interactive(df, weeks):
 
 ADIF_RECORD_SPLIT = re.compile(r"<eor>", re.IGNORECASE)
 ADIF_FIELD = re.compile(r"<([^:>]+):(\d+)>([^<]*)", re.IGNORECASE)
+
+
 
 
 def parse_adif(filename):
@@ -258,120 +313,6 @@ def build_dataframe(qsos):
 
     return pd.DataFrame(rows), sorted_weeks
 
-
-def plot_stacked_contacts(df, weeks):
-    # Pivot and cumulative sum
-    pivot = df.pivot_table(
-        index="week_index",
-        columns="type",
-        values="count",
-        fill_value=0
-    ).sort_index()
-
-    pivot = pivot.cumsum()
-
-    # Sort columns by band order, then mode
-    def sort_key(t):
-        band, mode = t.split()
-        return (BAND_ORDER.get(band, 99), mode)
-
-    types = sorted(pivot.columns, key=sort_key)
-    pivot = pivot[types]
-
-    x = pivot.index.values
-    y = [pivot[t].values for t in types]
-    colours = [colour_for_type(t) for t in types]
-
-    fig, ax = plt.subplots(figsize=(15, 9))
-
-    stacks = ax.stackplot(
-        x,
-        y,
-        labels=types,
-        colors=colours,
-        alpha=0.85,
-        picker=True
-    )
-
-    # X-axis labels
-    week_labels = [label for (_, _, label) in weeks]
-    step = max(1, len(week_labels) // 20)
-    ax.set_xticks(x[::step])
-    ax.set_xticklabels(
-        week_labels[::step],
-        rotation=45,
-        ha="right",
-        fontsize=9
-    )
-
-    ax.set_xlabel("ISO Week")
-    ax.set_ylabel("Cumulative QSOs")
-    ax.set_title("WSJT-X Cumulative QSOs (Stacked by Band / Mode)")
-    ax.grid(True, axis="y", alpha=0.3)
-
-
-
-
-
-    # Legend — always show all types, reverse to match stack order
-    handles = []
-    labels = []
-    for t in all_types[::-1]:
-        handles.append(plt.Line2D([0], [0], color=colour_for_type(t), lw=6))
-        labels.append(t)
-
-    legend = ax.legend(
-        handles,
-        labels,
-        title="Band / Mode",
-        loc="upper left",
-        bbox_to_anchor=(1.01, 1),
-        fontsize=9
-    )
-
-    # Map legend items → type
-    legend_map = dict(zip(legend.legend_handles, all_types[::-1]))
-
-    # Update alpha for enabled/disabled
-    for leg in legend.legend_handles:
-        t = legend_map[leg]
-        leg.set_alpha(1.0 if t in enabled_types else 0.3)
-
-    # Legend click handler
-    def on_pick(event):
-        leg = event.artist
-        if leg not in legend_map:
-            return
-
-        label = legend_map[leg]
-        if label in enabled_types:
-            enabled_types.remove(label)
-        else:
-            enabled_types.add(label)
-
-        draw_stack()  # redraw stacks for enabled types
-
-    for leg in legend.legend_handles:
-        leg.set_picker(True)
-
-    fig.canvas.mpl_connect("pick_event", on_pick)
-
-    # Hover tooltips
-    cursor = mplcursors.cursor(stacks, hover=True)
-
-    @cursor.connect("add")
-    def on_add(sel):
-        idx = stacks.index(sel.artist)
-        week = int(sel.target[0])
-        value = int(sel.target[1])
-        sel.annotation.set_text(
-            f"{types[idx]}\n"
-            f"Week: {week_labels[week]}\n"
-            f"QSOs: {value}"
-        )
-
-    plt.tight_layout()
-    plt.show()
 
 def main():
     adif_file = "wsjtx_log.adi"   # ← change as needed
