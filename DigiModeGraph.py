@@ -1,7 +1,9 @@
 
 # This version plots all the QSOs for all bands cumulative for all time week.
-# But teh legend is "upside-down".
+# Tyring to figure out a more workable colour mode.
+# Haven't quite got the hang of teh interaction thing yet.
 # pip install tqdm
+# pip install mplcursors
 
 import re
 from datetime import datetime
@@ -10,6 +12,141 @@ from collections import defaultdict, OrderedDict
 import pandas as pd
 import matplotlib.pyplot as plt
 from tqdm import tqdm
+
+import mplcursors
+import numpy as np
+
+
+BAND_ORDER = [
+    "2200m", "630m", "160m", "80m", "60m", "40m", "30m",
+    "20m", "17m", "15m", "12m", "10m", "6m", "4m",
+    "2m", "70cm"
+]
+
+
+def colour_for_type(qso_type):
+    band, mode = qso_type.split()
+
+    if band in BAND_ORDER:
+        frac = BAND_ORDER.index(band) / (len(BAND_ORDER) - 1)
+    else:
+        frac = 0.5
+
+    # Red → Blue gradient by band
+    red = 0.9 * (1 - frac) + 0.2 * frac
+    blue = 0.2 * (1 - frac) + 0.9 * frac
+
+    # Strong green separation by mode
+    green = 0.85 if mode == "FT8" else 0.30
+
+    return (red, green, blue)
+
+
+def plot_cumulative_stacked_interactive(df, weeks):
+    """
+    Interactive cumulative stacked area chart of QSOs per week by band/mode.
+    """
+    # Pivot weekly counts into wide format
+    pivot = df.pivot_table(
+        index="week_index",
+        columns="type",
+        values="count",
+        fill_value=0
+    ).sort_index()
+
+    # Cumulative sum over time
+    pivot = pivot.cumsum()
+
+    # Sort bands logically
+    def sort_key(t):
+        band, mode = t.split()
+        return (BAND_ORDER.index(band) if band in BAND_ORDER else 99, mode)
+
+    types = sorted(pivot.columns, key=sort_key)
+    pivot = pivot[types]
+
+    x = pivot.index.values
+    y = np.row_stack([pivot[t].values for t in types])
+    colours = [colour_for_type(t) for t in types]
+
+    fig, ax = plt.subplots(figsize=(15, 9))
+
+    stacks = ax.stackplot(
+        x,
+        y,
+        colors=colours,
+        alpha=0.85
+    )
+
+    # X-axis labels
+    week_labels = [label for (_, _, label) in weeks]
+    step = max(1, len(week_labels) // 20)
+    ax.set_xticks(x[::step])
+    ax.set_xticklabels(
+        week_labels[::step],
+        rotation=45,
+        ha="right",
+        fontsize=9
+    )
+
+    ax.set_xlabel("ISO Week")
+    ax.set_ylabel("Cumulative QSOs")
+    ax.set_title("WSJT-X Cumulative QSOs (Stacked by Band / Mode)")
+    ax.grid(True, axis="y", alpha=0.3)
+
+    # Legend (reverse order to match stack)
+    handles = stacks[::-1]
+    labels = types[::-1]
+
+    legend = ax.legend(
+        handles,
+        labels,
+        title="Band / Mode",
+        loc="upper left",
+        bbox_to_anchor=(1.01, 1),
+        fontsize=9
+    )
+
+    # Click-to-toggle visibility (robust)
+    visibility = dict(zip(labels, [True] * len(labels)))
+
+    def make_toggle(label, artist):
+        def toggle(event):
+            visibility[label] = not visibility[label]
+            artist.set_visible(visibility[label])
+            fig.canvas.draw_idle()
+        return toggle
+
+    for leg_artist, label, stack in zip(
+        legend.legend_handles, labels, handles
+    ):
+        leg_artist.set_picker(True)
+        fig.canvas.mpl_connect(
+            "pick_event",
+            make_toggle(label, stack)
+        )
+
+    # Hover tooltips (no PolyCollection warning)
+    cursor = mplcursors.cursor(ax, hover=True)
+
+    @cursor.connect("add")
+    def on_add(sel):
+        xidx = int(round(sel.target[0]))
+        if xidx < 0 or xidx >= len(x):
+            return
+
+        for t in types:
+            val = pivot[t].iloc[xidx]
+            if sel.target[1] <= val:
+                sel.annotation.set_text(
+                    f"{t}\n"
+                    f"{week_labels[xidx]}\n"
+                    f"QSOs: {int(val)}"
+                )
+                return
+
+    plt.tight_layout()
+    plt.show()
 
 
 ADIF_RECORD_SPLIT = re.compile(r"<eor>", re.IGNORECASE)
@@ -114,10 +251,7 @@ def build_dataframe(qsos):
 
 
 def plot_stacked_contacts(df, weeks):
-    """
-    Plot cumulative stacked area chart of QSOs per week by band/mode.
-    """
-    # Pivot into wide format: week_index x type
+    # Pivot and cumulative sum
     pivot = df.pivot_table(
         index="week_index",
         columns="type",
@@ -125,37 +259,90 @@ def plot_stacked_contacts(df, weeks):
         fill_value=0
     ).sort_index()
 
-    # CUMULATIVE SUM OVER TIME
-    pivot_cumulative = pivot.cumsum()
+    pivot = pivot.cumsum()
 
-    x = pivot_cumulative.index.values
-    y = [pivot_cumulative[col].values for col in pivot_cumulative.columns]
+    # Sort columns by band order, then mode
+    def sort_key(t):
+        band, mode = t.split()
+        return (BAND_ORDER.get(band, 99), mode)
 
-    plt.figure(figsize=(15, 9))
-    plt.stackplot(x, y, labels=pivot_cumulative.columns, alpha=0.85)
+    types = sorted(pivot.columns, key=sort_key)
+    pivot = pivot[types]
 
-    # X-axis labels (sparse for readability)
-    week_labels = [label for (_, _, label) in weeks]
-    step = max(1, len(week_labels) // 20)
+    x = pivot.index.values
+    y = [pivot[t].values for t in types]
+    colours = [colour_for_type(t) for t in types]
 
-    plt.xticks(
-        ticks=x[::step],
-        labels=week_labels[::step],
-        rotation=45,
-        ha="right",
-        fontsize=9,
+    fig, ax = plt.subplots(figsize=(15, 9))
+
+    stacks = ax.stackplot(
+        x,
+        y,
+        labels=types,
+        colors=colours,
+        alpha=0.85,
+        picker=True
     )
 
-    plt.xlabel("ISO Week")
-    plt.ylabel("Cumulative QSOs")
-    plt.title("WSJT-X Cumulative QSOs Over Time (Stacked by Band / Mode)")
-    plt.legend(
+    # X-axis labels
+    week_labels = [label for (_, _, label) in weeks]
+    step = max(1, len(week_labels) // 20)
+    ax.set_xticks(x[::step])
+    ax.set_xticklabels(
+        week_labels[::step],
+        rotation=45,
+        ha="right",
+        fontsize=9
+    )
+
+    ax.set_xlabel("ISO Week")
+    ax.set_ylabel("Cumulative QSOs")
+    ax.set_title("WSJT-X Cumulative QSOs (Stacked by Band / Mode)")
+    ax.grid(True, axis="y", alpha=0.3)
+
+    # Legend — reverse to match stack order
+    handles, labels = ax.get_legend_handles_labels()
+    handles = handles[::-1]
+    labels = labels[::-1]
+
+    legend = ax.legend(
+        handles,
+        labels,
         title="Band / Mode",
         loc="upper left",
         bbox_to_anchor=(1.01, 1),
         fontsize=9
     )
-    plt.grid(True, axis="y", alpha=0.3)
+
+    # Enable legend click-to-toggle
+    visibility = {label: True for label in labels}
+
+    def on_pick(event):
+        label = event.artist.get_label()
+        visibility[label] = not visibility[label]
+        idx = types.index(label)
+        stacks[idx].set_visible(visibility[label])
+        fig.canvas.draw_idle()
+
+    for legpatch in legend.legendHandles:
+        legpatch.set_picker(True)
+
+    fig.canvas.mpl_connect("pick_event", on_pick)
+
+    # Hover tooltips
+    cursor = mplcursors.cursor(stacks, hover=True)
+
+    @cursor.connect("add")
+    def on_add(sel):
+        idx = stacks.index(sel.artist)
+        week = int(sel.target[0])
+        value = int(sel.target[1])
+        sel.annotation.set_text(
+            f"{types[idx]}\n"
+            f"Week: {week_labels[week]}\n"
+            f"QSOs: {value}"
+        )
+
     plt.tight_layout()
     plt.show()
 
@@ -166,7 +353,7 @@ def main():
     print(f"Loaded {len(qsos)} QSOs")
 
     df, weeks = build_dataframe(qsos)
-    plot_stacked_contacts(df, weeks)
+    plot_cumulative_stacked_interactive(df, weeks)
 
 
 if __name__ == "__main__":
