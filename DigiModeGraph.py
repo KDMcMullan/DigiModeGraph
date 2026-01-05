@@ -1,7 +1,10 @@
 
 # This version plots all the QSOs for all bands cumulative for all time week.
 # Tyring to figure out a more workable colour mode.
-# Haven't quite got the hang of teh interaction thing yet.
+# Haven't quite got the hang of the interaction thing yet.
+# Now toggles teh graphs on and off by clicking teh key.
+# Need to redraw the graph without the "off" data, though.
+
 # pip install tqdm
 # pip install mplcursors
 
@@ -110,21 +113,31 @@ def plot_cumulative_stacked_interactive(df, weeks):
     # Click-to-toggle visibility (robust)
     visibility = dict(zip(labels, [True] * len(labels)))
 
-    def make_toggle(label, artist):
-        def toggle(event):
-            visibility[label] = not visibility[label]
-            artist.set_visible(visibility[label])
-            fig.canvas.draw_idle()
-        return toggle
 
-    for leg_artist, label, stack in zip(
-        legend.legend_handles, labels, handles
-    ):
-        leg_artist.set_picker(True)
-        fig.canvas.mpl_connect(
-            "pick_event",
-            make_toggle(label, stack)
-        )
+    # Map legend artists to stack artists
+    legend_artist_to_stack = {
+        leg: stack for leg, stack in zip(legend.legend_handles, handles)
+    }
+
+    visibility = {stack: True for stack in handles}
+
+    def on_pick(event):
+        leg_artist = event.artist
+        if leg_artist not in legend_artist_to_stack:
+            return
+
+        stack = legend_artist_to_stack[leg_artist]
+        visibility[stack] = not visibility[stack]
+        stack.set_visible(visibility[stack])
+
+        fig.canvas.draw_idle()
+
+    # Enable picking on legend handles
+    for leg in legend.legend_handles:
+        leg.set_picker(True)
+
+    fig.canvas.mpl_connect("pick_event", on_pick)
+
 
     # Hover tooltips (no PolyCollection warning)
     cursor = mplcursors.cursor(ax, hover=True)
