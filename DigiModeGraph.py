@@ -1,9 +1,7 @@
 
 # This version plots all the QSOs for all bands cumulative for all time week.
-# Tyring to figure out a more workable colour mode.
-# Haven't quite got the hang of the interaction thing yet.
-# Now toggles teh graphs on and off by clicking teh key.
-# Need to redraw the graph without the "off" data, though.
+# Happier with the coours.
+# Toggling data now works.
 
 # pip install tqdm
 # pip install mplcursors
@@ -46,117 +44,115 @@ def colour_for_type(qso_type):
 
 
 def plot_cumulative_stacked_interactive(df, weeks):
-    """
-    Interactive cumulative stacked area chart of QSOs per week by band/mode.
-    """
-    # Pivot weekly counts into wide format
+    import numpy as np
+    import matplotlib.pyplot as plt
+    import mplcursors
+
+    # Pivot + cumulative sum
     pivot = df.pivot_table(
         index="week_index",
         columns="type",
         values="count",
         fill_value=0
-    ).sort_index()
+    ).sort_index().cumsum()
 
-    # Cumulative sum over time
-    pivot = pivot.cumsum()
-
-    # Sort bands logically
+    # Sort types by band order then mode
     def sort_key(t):
         band, mode = t.split()
         return (BAND_ORDER.index(band) if band in BAND_ORDER else 99, mode)
 
-    types = sorted(pivot.columns, key=sort_key)
-    pivot = pivot[types]
+    all_types = sorted(pivot.columns, key=sort_key)
+    enabled_types = set(all_types)
 
     x = pivot.index.values
-    y = np.row_stack([pivot[t].values for t in types])
-    colours = [colour_for_type(t) for t in types]
+    week_labels = [label for (_, _, label) in weeks]
 
     fig, ax = plt.subplots(figsize=(15, 9))
 
-    stacks = ax.stackplot(
-        x,
-        y,
-        colors=colours,
-        alpha=0.85
-    )
+    # --- Draw initial stacks ---
+    types_to_draw = [t for t in all_types if t in enabled_types]
+    y = np.row_stack([pivot[t].values for t in types_to_draw])
+    colours = [colour_for_type(t) for t in types_to_draw]
+    stack_artists = ax.stackplot(x, y, colors=colours, alpha=0.85)
 
-    # X-axis labels
-    week_labels = [label for (_, _, label) in weeks]
+    # Axes formatting
     step = max(1, len(week_labels) // 20)
     ax.set_xticks(x[::step])
-    ax.set_xticklabels(
-        week_labels[::step],
-        rotation=45,
-        ha="right",
-        fontsize=9
-    )
-
+    ax.set_xticklabels(week_labels[::step], rotation=45, ha="right", fontsize=9)
     ax.set_xlabel("ISO Week")
     ax.set_ylabel("Cumulative QSOs")
     ax.set_title("WSJT-X Cumulative QSOs (Stacked by Band / Mode)")
     ax.grid(True, axis="y", alpha=0.3)
 
-    # Legend (reverse order to match stack)
-    handles = stacks[::-1]
-    labels = types[::-1]
+    # --- Persistent legend ---
+    handles = [plt.Line2D([0], [0], color=colour_for_type(t), lw=6) for t in all_types[::-1]]
+    labels = all_types[::-1]
+    legend = ax.legend(handles, labels, title="Band / Mode",
+                       loc="upper left", bbox_to_anchor=(1.01, 1), fontsize=9)
 
-    legend = ax.legend(
-        handles,
-        labels,
-        title="Band / Mode",
-        loc="upper left",
-        bbox_to_anchor=(1.01, 1),
-        fontsize=9
-    )
+    legend_map = dict(zip(legend.legend_handles, all_types[::-1]))
 
-    # Click-to-toggle visibility (robust)
-    visibility = dict(zip(labels, [True] * len(labels)))
+    for leg in legend.legend_handles:
+        t = legend_map[leg]
+        leg.set_alpha(1.0 if t in enabled_types else 0.3)
+        leg.set_picker(True)
 
+    # --- Draw/redraw function (only updates stacks) ---
+    def draw_stack():
+        # Remove old stack artists
+        for s in stack_artists:
+            s.remove()
+        stack_artists.clear()
 
-    # Map legend artists to stack artists
-    legend_artist_to_stack = {
-        leg: stack for leg, stack in zip(legend.legend_handles, handles)
-    }
-
-    visibility = {stack: True for stack in handles}
-
-    def on_pick(event):
-        leg_artist = event.artist
-        if leg_artist not in legend_artist_to_stack:
-            return
-
-        stack = legend_artist_to_stack[leg_artist]
-        visibility[stack] = not visibility[stack]
-        stack.set_visible(visibility[stack])
+        # Draw only enabled types
+        types_to_draw = [t for t in all_types if t in enabled_types]
+        if types_to_draw:
+            y = np.row_stack([pivot[t].values for t in types_to_draw])
+            colours = [colour_for_type(t) for t in types_to_draw]
+            new_stacks = ax.stackplot(x, y, colors=colours, alpha=0.85)
+            stack_artists.extend(new_stacks)
 
         fig.canvas.draw_idle()
 
-    # Enable picking on legend handles
-    for leg in legend.legend_handles:
-        leg.set_picker(True)
+    # --- Legend toggle handler ---
+    def on_pick(event):
+        leg = event.artist
+        if leg not in legend_map:
+            return
+
+        t = legend_map[leg]
+        if t in enabled_types:
+            enabled_types.remove(t)
+            leg.set_alpha(0.3)
+        else:
+            enabled_types.add(t)
+            leg.set_alpha(1.0)
+
+        draw_stack()  # redraw only visible stacks
 
     fig.canvas.mpl_connect("pick_event", on_pick)
 
-
-    # Hover tooltips (no PolyCollection warning)
+    # --- Hover cursor ---
     cursor = mplcursors.cursor(ax, hover=True)
 
     @cursor.connect("add")
     def on_add(sel):
-        xidx = int(round(sel.target[0]))
-        if xidx < 0 or xidx >= len(x):
+        idx = int(round(sel.target[0]))
+        if idx < 0 or idx >= len(x):
             return
 
-        for t in types:
-            val = pivot[t].iloc[xidx]
+        cumulative = 0
+        # Only enabled types
+        for t in all_types:
+            if t not in enabled_types:
+                continue
+            val = pivot[t].iloc[idx]
             if sel.target[1] <= val:
                 sel.annotation.set_text(
-                    f"{t}\n"
-                    f"{week_labels[xidx]}\n"
-                    f"QSOs: {int(val)}"
+                    f"{t}\n{week_labels[idx]}\nQSOs: {int(val)}"
                 )
                 return
+            cumulative = val
 
     plt.tight_layout()
     plt.show()
@@ -313,10 +309,16 @@ def plot_stacked_contacts(df, weeks):
     ax.set_title("WSJT-X Cumulative QSOs (Stacked by Band / Mode)")
     ax.grid(True, axis="y", alpha=0.3)
 
-    # Legend — reverse to match stack order
-    handles, labels = ax.get_legend_handles_labels()
-    handles = handles[::-1]
-    labels = labels[::-1]
+
+
+
+
+    # Legend — always show all types, reverse to match stack order
+    handles = []
+    labels = []
+    for t in all_types[::-1]:
+        handles.append(plt.Line2D([0], [0], color=colour_for_type(t), lw=6))
+        labels.append(t)
 
     legend = ax.legend(
         handles,
@@ -327,18 +329,30 @@ def plot_stacked_contacts(df, weeks):
         fontsize=9
     )
 
-    # Enable legend click-to-toggle
-    visibility = {label: True for label in labels}
+    # Map legend items → type
+    legend_map = dict(zip(legend.legend_handles, all_types[::-1]))
 
+    # Update alpha for enabled/disabled
+    for leg in legend.legend_handles:
+        t = legend_map[leg]
+        leg.set_alpha(1.0 if t in enabled_types else 0.3)
+
+    # Legend click handler
     def on_pick(event):
-        label = event.artist.get_label()
-        visibility[label] = not visibility[label]
-        idx = types.index(label)
-        stacks[idx].set_visible(visibility[label])
-        fig.canvas.draw_idle()
+        leg = event.artist
+        if leg not in legend_map:
+            return
 
-    for legpatch in legend.legendHandles:
-        legpatch.set_picker(True)
+        label = legend_map[leg]
+        if label in enabled_types:
+            enabled_types.remove(label)
+        else:
+            enabled_types.add(label)
+
+        draw_stack()  # redraw stacks for enabled types
+
+    for leg in legend.legend_handles:
+        leg.set_picker(True)
 
     fig.canvas.mpl_connect("pick_event", on_pick)
 
