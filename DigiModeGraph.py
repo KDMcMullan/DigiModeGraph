@@ -1,6 +1,6 @@
 
-# This version plots all the QSOs for all bands cumulative for each week.
-# No gaps between the end of one year and the start of the next.
+# This version plots all the QSOs for all bands cumulative for all time week.
+# But teh legend is "upside-down".
 # pip install tqdm
 
 import re
@@ -115,7 +115,7 @@ def build_dataframe(qsos):
 
 def plot_stacked_contacts(df, weeks):
     """
-    Plot stacked area chart of QSOs per week by band/mode.
+    Plot cumulative stacked area chart of QSOs per week by band/mode.
     """
     # Pivot into wide format: week_index x type
     pivot = df.pivot_table(
@@ -125,11 +125,14 @@ def plot_stacked_contacts(df, weeks):
         fill_value=0
     ).sort_index()
 
-    x = pivot.index.values
-    y = [pivot[col].values for col in pivot.columns]
+    # CUMULATIVE SUM OVER TIME
+    pivot_cumulative = pivot.cumsum()
+
+    x = pivot_cumulative.index.values
+    y = [pivot_cumulative[col].values for col in pivot_cumulative.columns]
 
     plt.figure(figsize=(15, 9))
-    plt.stackplot(x, y, labels=pivot.columns, alpha=0.85)
+    plt.stackplot(x, y, labels=pivot_cumulative.columns, alpha=0.85)
 
     # X-axis labels (sparse for readability)
     week_labels = [label for (_, _, label) in weeks]
@@ -144,8 +147,8 @@ def plot_stacked_contacts(df, weeks):
     )
 
     plt.xlabel("ISO Week")
-    plt.ylabel("Total QSOs")
-    plt.title("WSJT-X QSOs per Week (Stacked by Band / Mode)")
+    plt.ylabel("Cumulative QSOs")
+    plt.title("WSJT-X Cumulative QSOs Over Time (Stacked by Band / Mode)")
     plt.legend(
         title="Band / Mode",
         loc="upper left",
@@ -155,7 +158,6 @@ def plot_stacked_contacts(df, weeks):
     plt.grid(True, axis="y", alpha=0.3)
     plt.tight_layout()
     plt.show()
-
 
 def main():
     adif_file = "wsjtx_log.adi"   # ← change as needed
